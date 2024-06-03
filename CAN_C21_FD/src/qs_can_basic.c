@@ -7,7 +7,6 @@ static struct can_module can_instance;
 
 static uint8_t tx_message[CONF_CAN_ELEMENT_DATA_SIZE];
 
-static volatile uint32_t standard_receive_index = 0;
 static struct can_rx_element_buffer rx_element_buffer;
 
 static void configure_usart_cdc(void) {
@@ -55,16 +54,17 @@ static void configure_can(void) {
 	can_enable_interrupt(&can_instance, CAN_PROTOCOL_ERROR_ARBITRATION | CAN_PROTOCOL_ERROR_DATA);
 }
 
-static void can_set_standard_filters(void) {
+static void can_set_standard_filter(uint32_t index, uint32_t can_id) {
 	
 	struct can_standard_message_filter_element sd_filter;
 
 	can_get_standard_message_filter_element_default(&sd_filter);
-	sd_filter.S0.bit.SFID2 = 1; // buffer index
-	sd_filter.S0.bit.SFID1 = 0x123; // filter ID
+	sd_filter.S0.bit.SFID2 = index; // buffer index
+	sd_filter.S0.bit.SFID1 = can_id; // filter ID
 	sd_filter.S0.bit.SFEC = CAN_STANDARD_MESSAGE_FILTER_ELEMENT_S0_SFEC_STRXBUF_Val;
-
-	can_set_rx_standard_filter(&can_instance, &sd_filter, 1); // filter index
+	sd_filter.S0.bit.SFT = CAN_STANDARD_MESSAGE_FILTER_ELEMENT_S0_SFT_CLASSIC;
+	
+	can_set_rx_standard_filter(&can_instance, &sd_filter, index); // filter index
 	can_enable_interrupt(&can_instance, CAN_RX_BUFFER_NEW_MESSAGE);
 }
 
@@ -72,6 +72,7 @@ static void can_send_standard_message(uint32_t id_value, uint8_t *data, uint32_t
 	
 	uint32_t i;
 	struct can_tx_element tx_element;
+	int8_t result;
 
 	can_get_tx_buffer_element_defaults(&tx_element);
 	tx_element.T0.reg |= CAN_TX_ELEMENT_T0_STANDARD_ID(id_value);
@@ -83,7 +84,11 @@ static void can_send_standard_message(uint32_t id_value, uint8_t *data, uint32_t
 	}
 
 	can_set_tx_buffer_element(&can_instance, &tx_element, 0);
-	can_tx_transfer_request(&can_instance, 1 << 0);
+	while (can_tx_get_pending_status(&can_instance)) {
+		asm volatile("NOP");
+	}
+	result = can_tx_transfer_request(&can_instance, 1 << 0);
+	while (result != STATUS_OK) result = can_tx_transfer_request(&can_instance, 1 << 0);
 }
 
 uint8_t decode_can_message_dlc(uint8_t r1_dlc) {
@@ -121,7 +126,7 @@ uint8_t decode_can_message_dlc(uint8_t r1_dlc) {
 
 void CAN0_Handler(void) {
 	
-	volatile uint32_t status, i, rx_buffer_index;
+	volatile uint32_t status, i, d, rx_buffer_index;
 	status = can_read_interrupt_status(&can_instance);
 	uint8_t dlc = 0;
 	
@@ -133,9 +138,9 @@ void CAN0_Handler(void) {
 				can_rx_clear_buffer_status(&can_instance, i);
 				can_get_rx_buffer_element(&can_instance, &rx_element_buffer, rx_buffer_index);
 				dlc = decode_can_message_dlc(rx_element_buffer.R1.bit.DLC);
-				printf("\n\r Message received in Rx buffer %d. Received %d bytes: \r\n", rx_buffer_index, dlc);
-				for (i = 0; i < dlc; i++) {
-					printf("  %d", rx_element_buffer.data[i]);
+				printf("\n\r Message received in Rx buffer %d from %d. Received %d bytes: \r\n", rx_buffer_index, rx_element_buffer.R0.bit.ID, dlc);
+				for (d = 0; d < dlc; d++) {
+					printf("  %d", rx_element_buffer.data[d]);
 				}
 				printf("\r\n\r\n");
 			}
@@ -169,7 +174,10 @@ int main(void) {
 #endif
 
 	configure_can();
-	can_set_standard_filters();
+	can_set_standard_filter(1, 0x450);
+	can_set_standard_filter(2, 0x451);
+	can_set_standard_filter(3, 0x452);
+	can_set_standard_filter(4, 0x453);
 
 	while(1) {
 		
